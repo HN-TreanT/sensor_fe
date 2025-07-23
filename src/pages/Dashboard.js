@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { 
   Thermometer, 
   Droplets, 
@@ -16,16 +15,20 @@ import {
   Filter,
   Grid3x3,
   List,
-  ChevronDown
+  ChevronDown,
+  Map, ChartLine
 } from 'lucide-react';
 import SensorCard from '../components/SensorCard';
 import StatsOverview from '../components/StatsOverview';
+import MapView from '../components/MapView';
+import DetailChart from '../components/DetailChart';
+import TableView from '../components/TableView';
 
 const IoTDashboard = () => {
   const [sensorData, setSensorData] = useState({});
   const [isConnected, setIsConnected] = useState(true);
   const [selectedSensorTypes, setSelectedSensorTypes] = useState([]);
-  const [viewMode, setViewMode] = useState('grid'); // 'grid' or 'list'
+  const [viewMode, setViewMode] = useState('grid'); // 'grid', 'chart', or 'map'
   const [showFilters, setShowFilters] = useState(false);
   const [notifications, setNotifications] = useState([]);
 
@@ -43,60 +46,84 @@ const IoTDashboard = () => {
     'D': { name: 'Cửa', unit: '', min: 0, max: 1, icon: DoorOpen, color: '#6366f1' }
   };
 
-  // Mô phỏng dữ liệu MQTT
+  // Kiểm tra kết nối SSE
   useEffect(() => {
-    const simulateMQTTData = () => {
-      const clusters = ['001', '002', '003'];
+    const SSE_ENDPOINT = 'http://localhost:8000/events';
+    const connectSSE = () => {
+      const eventSource = new EventSource(SSE_ENDPOINT);
+      eventSource.onopen = () => {
+        console.log('SSE connection opened');
+        setIsConnected(true);
+      };
       
-      clusters.forEach(cluster => {
-        Object.keys(sensorTypes).forEach(sensorType => {
-          const { min, max } = sensorTypes[sensorType];
-          let value;
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
           
-          if (sensorType === 'M' || sensorType === 'D') {
-            value = Math.random() > 0.8 ? 1 : 0;
-          } else {
-            value = (Math.random() * (max - min) + min).toFixed(sensorType === 'PH' ? 1 : 0);
+          // Validate data format
+          if (!data.cluster || !data.sensor || data.value === undefined || !data.timestamp) {
+            console.warn('Invalid data format:', data);
+            return;
           }
-
-          const timestamp = new Date();
-          const key = `${cluster}_${sensorType}`;
-
+          
+          const { cluster, sensor, value, timestamp } = data;
+          const key = `${cluster}_${sensor}`;
+          const timestampObj = new Date(timestamp);
+          
           setSensorData(prev => {
             const existing = prev[key] || { 
               cluster, 
-              type: sensorType, 
-              ...sensorTypes[sensorType],
+              type: sensor, 
+              ...sensorTypes[sensor],
               history: [] 
             };
             
             const newHistory = [...existing.history, { 
-              time: timestamp.toLocaleTimeString(), 
+              time: timestampObj.toLocaleTimeString(), 
               value: parseFloat(value),
-              timestamp 
+              timestamp: timestampObj 
             }].slice(-20);
-
+            
             return {
               ...prev,
               [key]: {
                 ...existing,
                 currentValue: value,
                 history: newHistory,
-                lastUpdate: timestamp
+                lastUpdate: timestampObj
               }
             };
           });
-        });
-      });
+          
+        } catch (error) {
+          console.error('Error parsing SSE data:', error);
+        }
+      };
+      
+      eventSource.onerror = (error) => {
+        console.error('SSE connection error:', error);
+        setIsConnected(false);
+        
+        // Auto-reconnect after 5 seconds
+        setTimeout(() => {
+          console.log('Attempting to reconnect SSE...');
+          eventSource.close();
+          connectSSE();
+        }, 5000);
+      };
+      
+      return eventSource;
     };
-
-    simulateMQTTData();
-    const interval = setInterval(simulateMQTTData, 3000);
     
-    // Initialize with all sensor types selected
+    const eventSource = connectSSE();
     setSelectedSensorTypes(Object.keys(sensorTypes));
     
-    return () => clearInterval(interval);
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+        setIsConnected(false);
+      }
+    };
   }, []);
 
   const clusters = [...new Set(Object.values(sensorData).map(s => s.cluster))];
@@ -131,9 +158,9 @@ const IoTDashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className={`${viewMode === 'map' ? 'h-screen flex flex-col' : 'min-h-screen'} bg-gradient-to-br from-blue-50 to-indigo-100`}>
       {/* Mobile-First Header */}
-      <div className="bg-white shadow-lg sticky top-0 z-50">
+      <div className="bg-white shadow-lg sticky top-0 z-50 flex-shrink-0">
         <div className="px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -168,21 +195,37 @@ const IoTDashboard = () => {
             <div className="flex items-center space-x-2">
               <button
                 onClick={() => setViewMode('grid')}
-                className={`p-2 rounded-lg ${viewMode === 'grid' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+                className={`p-2 rounded-lg transition-colors ${viewMode === 'grid' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                title="Lưới"
               >
                 <Grid3x3 size={16} />
               </button>
               <button
                 onClick={() => setViewMode('list')}
-                className={`p-2 rounded-lg ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
+                className={`p-2 rounded-lg transition-colors ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                title="Danh sách"
               >
                 <List size={16} />
+              </button>
+              <button
+                onClick={() => setViewMode('chart')}
+                className={`p-2 rounded-lg transition-colors ${viewMode === 'chart' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                title="Danh sách"
+              >
+                <ChartLine size={16} />
+              </button>
+              <button
+                onClick={() => setViewMode('map')}
+                className={`p-2 rounded-lg transition-colors ${viewMode === 'map' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                title="Bản đồ"
+              >
+                <Map size={16} />
               </button>
             </div>
           </div>
 
-          {/* Filter Panel */}
-          {showFilters && (
+          {/* Filter Panel - Chỉ hiện khi không phải map mode hoặc khi showFilters = true */}
+          {showFilters && viewMode !== 'map' && viewMode !=='chart' && (
             <div className="mt-4 p-4 bg-gray-50 rounded-lg">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-semibold text-gray-800">Chọn loại cảm biến</h3>
@@ -230,100 +273,63 @@ const IoTDashboard = () => {
         </div>
       </div>
 
-      {/* Stats Overview */}
-      
-      <div className="px-4 py-4">
-        {/* <StatsOverview sensorData={sensorData} clusters={clusters} notifications={notifications} isConnected={isConnected}/> */}
-        {/* Cluster-based Data Display */}
-        {clusters.map(cluster => {
-          const clusterData = dataByCluster[cluster];
-          if (!clusterData || clusterData.length === 0) return null;
+      {/* Main Content */}
+      {viewMode === 'map' ? (
+        <div className="flex-1 overflow-hidden">
+          <MapView />
+        </div>
+      ) : (
+        // Grid/List View - Layout bình thường với padding
+        <div className="px-4 py-4">
+          {/* <StatsOverview sensorData={sensorData} clusters={clusters} notifications={notifications} isConnected={isConnected}/> */}
+          
+          {/* Cluster-based Data Display */}
+          {
+            viewMode === 'chart' ? (<DetailChart sensorData={sensorData}/>) : viewMode ==='list' ? (<TableView sensorData={sensorData} selectedSensorTypes={selectedSensorTypes}/>) : (
+              <>
+               {clusters.map(cluster => {
+                const clusterData = dataByCluster[cluster];
+                if (!clusterData || clusterData.length === 0) return null;
 
-          return (
-            <div key={cluster} className="mb-8">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-800">
-                  Cụm {cluster}
-                </h2>
-                <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
-                  {clusterData.length} cảm biến
-                </span>
-              </div>
+                return (
+                  <div key={cluster} className="mb-8">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-lg font-semibold text-gray-800">
+                        Cụm {cluster}
+                      </h2>
+                      <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium">
+                        {clusterData.length} cảm biến
+                      </span>
+                    </div>
 
-              <div className={
-                viewMode === 'grid' 
-                  ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" 
-                  : "space-y-4"
-              }>
-                {clusterData.map(sensor => (
-                  <SensorCard 
-                    key={`${sensor.cluster}_${sensor.type}`} 
-                    sensor={sensor} 
-                    compact={viewMode === 'list'} 
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
-
-        {filteredData.length === 0 && (
-          <div className="text-center py-12">
-            <div className="text-gray-400 text-lg mb-2">Không có dữ liệu</div>
-            <div className="text-gray-500 text-sm">Vui lòng chọn ít nhất một loại cảm biến</div>
-          </div>
-        )}
-      </div>
-
-        {/* Detailed Charts */}
-        {/* {Object.values(sensorData).filter(s => s.history.length > 0 && !['M', 'D'].includes(s.type)).length > 0 && (
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-6">Biểu đồ chi tiết</h2>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-              {Object.values(sensorData)
-                .filter(sensor => sensor.history.length > 0 && !['M', 'D'].includes(sensor.type))
-                .slice(0, 4)
-                .map(sensor => (
-                <div key={`${sensor.cluster}_${sensor.type}`} className="space-y-3">
-                  <h3 className="font-medium text-gray-700">
-                    {sensor.name} - Cụm {sensor.cluster}
-                  </h3>
-                  <div className="h-48">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={sensor.history}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                        <XAxis 
-                          dataKey="time" 
-                          stroke="#666"
-                          fontSize={12}
+                    <div className={
+                      viewMode === 'grid' 
+                        ? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" 
+                        : "space-y-4"
+                    }>
+                      {clusterData.map(sensor => (
+                        <SensorCard 
+                          key={`${sensor.cluster}_${sensor.type}`} 
+                          sensor={sensor} 
+                          compact={viewMode === 'chart'} 
                         />
-                        <YAxis 
-                          stroke="#666"
-                          fontSize={12}
-                        />
-                        <Tooltip 
-                          contentStyle={{
-                            backgroundColor: 'white',
-                            border: `2px solid ${sensor.color}`,
-                            borderRadius: '8px'
-                          }}
-                        />
-                        <Line 
-                          type="monotone" 
-                          dataKey="value" 
-                          stroke={sensor.color}
-                          strokeWidth={3}
-                          dot={{ fill: sensor.color, strokeWidth: 2, r: 4 }}
-                          activeDot={{ r: 6, stroke: sensor.color, strokeWidth: 2 }}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+                      ))}
+                    </div>
                   </div>
+                );
+              })}
+
+              {filteredData.length === 0 && (
+                <div className="text-center py-12">
+                  <div className="text-gray-400 text-lg mb-2">Không có dữ liệu</div>
+                  <div className="text-gray-500 text-sm">Vui lòng chọn ít nhất một loại cảm biến</div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )} */}
+              )}
+              </>
+            )
+          }
+        </div>
+      )}
     </div>
   );
 };
